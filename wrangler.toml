@@ -1,0 +1,25 @@
+# Template config. Copy to wrangler.prod.toml (gitignored), fill in your values,
+# then deploy with: npm run deploy:prod
+name = "layerpal-relay"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+# account_id = "<your Cloudflare account id>"
+workers_dev = true
+
+[vars]
+# Apple Developer Team ID and the app's bundle ID (the APNs topic).
+APNS_TEAM_ID = "<TEAM_ID>"
+APNS_BUNDLE_ID = "<com.example.layerpal>"
+
+# wrangler d1 create layerpal-relay, then wrangler d1 execute layerpal-relay --remote --file schema.sql
+[[d1_databases]]
+binding = "DB"
+database_name = "layerpal-relay"
+database_id = "<your D1 database id>"
+
+# Secrets (wrangler secret put): APNS_SANDBOX_KEY_ID, APNS_SANDBOX_P8,
+# APNS_PRODUCTION_KEY_ID, APNS_PRODUCTION_P8, POLL_KEY_SECRET (AES-GCM, 32 bytes base64)
+
+# Once a minute: refresh Lock Screen cards from each phone's Bambuddy.
+[triggers]
+crons = ["* * * * *"]
