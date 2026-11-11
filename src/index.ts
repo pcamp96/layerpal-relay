@@ -205,7 +205,11 @@ async function registerActivity(req: Request, env: Env): Promise<Response> {
   if (!body?.relay_token || !body.push_token || !HEX.test(body.push_token)) {
     return json({ error: "relay_token and push_token are required" }, 400);
   }
-  if (!(await getDevice(env, body.relay_token))) return json({ error: "unknown device" }, 404);
+  if (!(await getDevice(env, body.relay_token))) {
+    console.log(JSON.stringify({ at: "activity-register", ok: false, reason: "unknown device" }));
+    return json({ error: "unknown device" }, 404);
+  }
+  console.log(JSON.stringify({ at: "activity-register", ok: true, token: body.push_token.slice(0, 8) }));
   await env.DB.batch([
     // One all-prints card per phone: a new token replaces the old ones.
     env.DB.prepare("DELETE FROM activities WHERE relay_token = ? AND push_token != ?").bind(body.relay_token, body.push_token),
@@ -246,6 +250,7 @@ async function hook(req: Request, env: Env, relayToken: string): Promise<Respons
 
   const results: string[] = [];
   const update = printUpdate(w, nowS);
+  console.log(JSON.stringify({ at: "hook", event: w.event, phase: update?.phase ?? null }));
   let started = false;
   if (update) {
     await upsertPrint(env, relayToken, update).run();
@@ -282,7 +287,8 @@ async function pollAll(env: Env): Promise<void> {
   )
     .bind(MAX_POLLS_PER_RUN)
     .all<DeviceRow>();
-  await Promise.allSettled(devices.map((d) => pollDevice(env, d)));
+  const results = await Promise.allSettled(devices.map((d) => pollDevice(env, d)));
+  console.log(JSON.stringify({ at: "poll", results: results.map((r) => (r.status === "fulfilled" ? r.value : String(r.reason))) }));
 }
 
 async function pollDevice(env: Env, device: DeviceRow): Promise<string> {
@@ -364,12 +370,14 @@ async function syncActivity(
       if (!opts.force && !changed && nowS - (device.last_push_at ?? 0) < HEARTBEAT_S) return "unchanged";
       for (const t of tokens) {
         const r = await send(t.push_token, { event: "update", "stale-date": nowS + STALE_AFTER_S });
+        if (!r.ok) console.log(JSON.stringify({ at: "update", token: t.push_token.slice(0, 8), status: r.status, reason: r.reason }));
         if (isDeadToken(r)) await env.DB.prepare("DELETE FROM activities WHERE push_token = ?").bind(t.push_token).run();
       }
       await remember();
       return "updated";
     }
     for (const t of tokens) await send(t.push_token, { event: "end", "dismissal-date": nowS + DISMISS_AFTER_S });
+    console.log(JSON.stringify({ at: "end", tokens: tokens.length, phases: rows.map((r) => r.phase) }));
     await env.DB.batch([
       env.DB.prepare("DELETE FROM activities WHERE relay_token = ?").bind(device.relay_token),
       env.DB.prepare("DELETE FROM prints WHERE relay_token = ? AND phase NOT IN ('printing','paused','preparing','error')").bind(
@@ -395,11 +403,15 @@ async function syncActivity(
     const who = opts.starter ?? lead?.printer ?? "A printer";
     const r = await send(device.start_token, {
       event: "start",
+      // iOS 18+: without this the started card never gets an update token, so the
+      // relay can't refresh or end it (Apple: "Construct the payload that starts a Live Activity").
+      "input-push-token": 1,
       "attributes-type": ACTIVITY_TYPE,
       attributes: { title: "Prints" },
       "stale-date": nowS + STALE_AFTER_S,
       alert: { title: `${who} is printing`, body: lead?.jobName || "Print started" },
     });
+    console.log(JSON.stringify({ at: "start", status: r.status, reason: r.reason }));
     if (isDeadToken(r)) {
       await env.DB.prepare("UPDATE devices SET start_token = NULL WHERE relay_token = ?").bind(device.relay_token).run();
       return "none";

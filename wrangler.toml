@@ -23,3 +23,7 @@ database_id = "<your D1 database id>"
 # Once a minute: refresh Lock Screen cards from each phone's Bambuddy.
 [triggers]
 crons = ["* * * * *"]
+
+# Keep Worker logs (queryable in the dashboard / API) for diagnosing card delivery.
+[observability]
+enabled = true
