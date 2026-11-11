@@ -46,6 +46,8 @@ interface DeviceRow {
   poll_key?: string | null;
   last_state?: string | null;
   last_push_at?: number | null;
+  /** Set when a push-to-start went out; cleared when nothing is printing. */
+  start_sent_at?: number | null;
 }
 
 const HEX = /^[0-9a-f]{16,200}$/i;
@@ -81,7 +83,8 @@ async function readJson<T>(req: Request): Promise<T | null> {
   }
 }
 
-const DEVICE_COLS = "relay_token, device_token, environment, start_token, server_url, poll_key, last_state, last_push_at";
+const DEVICE_COLS =
+  "relay_token, device_token, environment, start_token, server_url, poll_key, last_state, last_push_at, start_sent_at";
 const PRINT_COLS = "printer, phase, progress, finish_at, job, updated_at, layer, total_layers";
 
 async function getDevice(env: Env, relayToken: string): Promise<DeviceRow | null> {
@@ -372,12 +375,22 @@ async function syncActivity(
       env.DB.prepare("DELETE FROM prints WHERE relay_token = ? AND phase NOT IN ('printing','paused','preparing','error')").bind(
         device.relay_token,
       ),
-      env.DB.prepare("UPDATE devices SET last_state = NULL WHERE relay_token = ?").bind(device.relay_token),
+      env.DB.prepare("UPDATE devices SET last_state = NULL, start_sent_at = NULL WHERE relay_token = ?").bind(device.relay_token),
     ]);
     return "ended";
   }
 
-  if (anyActive && device.start_token) {
+  if (!anyActive) {
+    if (device.start_sent_at) {
+      await env.DB.prepare("UPDATE devices SET start_sent_at = NULL WHERE relay_token = ?").bind(device.relay_token).run();
+    }
+    return "none";
+  }
+  // A card was already started this session but its update token never reached us
+  // (the app wasn't woken to register it). Starting another just stacks frozen cards.
+  if (device.start_sent_at) return "start-pending";
+
+  if (device.start_token) {
     const lead = state.prints.find((p) => isActive(p.phase));
     const who = opts.starter ?? lead?.printer ?? "A printer";
     const r = await send(device.start_token, {
@@ -391,7 +404,10 @@ async function syncActivity(
       await env.DB.prepare("UPDATE devices SET start_token = NULL WHERE relay_token = ?").bind(device.relay_token).run();
       return "none";
     }
-    if (r.ok) await remember();
+    if (r.ok) {
+      await remember();
+      await env.DB.prepare("UPDATE devices SET start_sent_at = ? WHERE relay_token = ?").bind(nowS, device.relay_token).run();
+    }
     return r.ok ? "started" : `none(${r.status} ${r.reason})`;
   }
   return "none";
